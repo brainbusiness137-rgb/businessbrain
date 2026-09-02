@@ -6,6 +6,9 @@ import {
   DEFAULT_ROLE_PERMISSIONS,
   ROLES,
   PlatformRole,
+  PERMISSIONS,
+  Permission,
+  PERMISSION_LABELS,
 } from "@/lib/permissions";
 
 type PlatformUser = {
@@ -14,6 +17,7 @@ type PlatformUser = {
   email: string;
   role: string;
   active: boolean;
+  permissions: Record<string, boolean>;
 };
 
 export default function UsersPage() {
@@ -363,12 +367,17 @@ async function handleToggleActive(user: PlatformUser) {
 
   <select
     value={editingUser.role}
-    onChange={(event) =>
-      setEditingUser({
-        ...editingUser,
-        role: event.target.value,
-      })
-    }
+    onChange={(event) => {
+  const newRole = event.target.value as PlatformRole;
+
+  setEditingUser({
+    ...editingUser,
+    role: newRole,
+    permissions: {
+      ...DEFAULT_ROLE_PERMISSIONS[newRole],
+    },
+  });
+}}
     className="w-full rounded-lg border border-gray-300 px-4 py-3 outline-none focus:ring-2"
   >
     {Object.entries(ROLES).map(([key, value]) => (
@@ -377,6 +386,40 @@ async function handleToggleActive(user: PlatformUser) {
       </option>
     ))}
   </select>
+</div>
+<div className="mt-5">
+  <label className="mb-3 block text-sm font-medium">
+    صلاحيات المستخدم
+  </label>
+
+  <div className="grid gap-3 sm:grid-cols-2">
+    {Object.values(PERMISSIONS).map((permission) => (
+      <label
+        key={permission}
+        className="flex items-center justify-between rounded-lg border border-gray-200 p-3"
+      >
+        <span className="text-sm">
+          {PERMISSION_LABELS[permission]}
+        </span>
+
+        <input
+          type="checkbox"
+          checked={editingUser.permissions?.[permission] === true}
+          onChange={() =>
+            setEditingUser({
+              ...editingUser,
+              permissions: {
+                ...editingUser.permissions,
+                [permission]:
+                  editingUser.permissions?.[permission] !== true,
+              },
+            })
+          }
+          className="h-5 w-5"
+        />
+      </label>
+    ))}
+  </div>
 </div>
     {/* كلمة المرور الجديدة */}
     <div className="mt-5">
@@ -413,6 +456,7 @@ async function handleToggleActive(user: PlatformUser) {
   userId: editingUser.id,
   name: editingUser.name,
   role: editingUser.role,
+  permissions: editingUser.permissions,
   ...(newPassword.trim()
     ? { password: newPassword }
     : {}),
@@ -430,10 +474,12 @@ async function handleToggleActive(user: PlatformUser) {
     setUsers((currentUsers) =>
       currentUsers.map((currentUser) =>
         currentUser.id === editingUser.id
-          ? {
-              ...currentUser,
-              name: editingUser.name,
-            }
+         ? {
+    ...currentUser,
+    name: editingUser.name,
+    role: editingUser.role,
+    permissions: editingUser.permissions,
+  }
           : currentUser
       )
     );

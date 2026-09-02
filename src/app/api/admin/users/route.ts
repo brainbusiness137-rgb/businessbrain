@@ -47,6 +47,7 @@ export async function GET() {
         email: data.email ?? "",
         role: data.role ?? "",
         active: data.active === true,
+        permissions: data.permissions || {},
       };
     });
 

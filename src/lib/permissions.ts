@@ -17,7 +17,19 @@ export const PERMISSIONS = {
 
 export type Permission =
   (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
-
+export const PERMISSION_LABELS: Record<Permission, string> = {
+  manageUsers: "إدارة المستخدمين",
+  manageRoles: "إدارة الأدوار",
+  managePermissions: "إدارة الصلاحيات",
+  manageCompanies: "إدارة الشركات",
+  manageProjects: "إدارة المشاريع",
+  createProcess: "إنشاء إجراء",
+  editProcess: "تعديل إجراء",
+  submitProcess: "إرسال إجراء للمراجعة",
+  reviewProcess: "مراجعة الإجراءات",
+  approveProcess: "اعتماد الإجراءات",
+  viewAuditLogs: "عرض سجل العمليات",
+};
 export const ROLES = {
   platform_owner: "platform_owner",
   platform_manager: "platform_manager",
