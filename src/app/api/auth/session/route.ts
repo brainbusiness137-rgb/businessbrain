@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminAuth } from "@/lib/firebase-admin";
+import {
+  isAllowedAuthOrigin,
+  SESSION_COOKIE_MAX_AGE_SECONDS,
+  SESSION_COOKIE_NAME,
+  sessionCookieOptions,
+} from "@/lib/auth-security";
 
 export async function POST(request: NextRequest) {
   try {
-    const origin = request.headers.get("origin");
-
-    if (origin && !origin.includes(".app.github.dev") && !origin.includes("localhost")) {
+    if (!isAllowedAuthOrigin(request.headers.get("origin"))) {
       return NextResponse.json(
         { success: false, message: "Invalid origin" },
         { status: 403 }
@@ -21,9 +25,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const decodedToken = await adminAuth.verifyIdToken(idToken);
+    const decodedToken = await adminAuth.verifyIdToken(idToken, true);
 
-    const expiresIn = 1000 * 60 * 60 * 24 * 5;
+    const expiresIn = SESSION_COOKIE_MAX_AGE_SECONDS * 1000;
 
     const sessionCookie = await adminAuth.createSessionCookie(idToken, {
       expiresIn,
@@ -34,12 +38,9 @@ export async function POST(request: NextRequest) {
       uid: decodedToken.uid,
     });
 
-    response.cookies.set("businessbrain_session", sessionCookie, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      path: "/",
-      maxAge: expiresIn / 1000,
+    response.cookies.set(SESSION_COOKIE_NAME, sessionCookie, {
+      ...sessionCookieOptions(request),
+      maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
     });
 
     return response;

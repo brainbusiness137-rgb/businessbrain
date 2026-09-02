@@ -1,17 +1,34 @@
 "use client";
 
 import { getAuth, signOut } from "firebase/auth";
+import { useRouter } from "next/navigation";
 import app from "@/lib/firebase";
 
 const auth = getAuth(app);
 
 export default function LogoutButton() {
+  const router = useRouter();
+
   async function handleLogout() {
     try {
-      await signOut(auth);
-      window.location.href = "/login";
+      const response = await fetch("/api/auth/logout", {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        throw new Error("Server logout failed");
+      }
     } catch (error) {
       console.error("Logout error:", error);
+    } finally {
+      try {
+        await signOut(auth);
+      } catch (error) {
+        console.error("Firebase client logout error:", error);
+      }
+
+      router.replace("/login");
+      router.refresh();
     }
   }
 

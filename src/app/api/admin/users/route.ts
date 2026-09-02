@@ -463,6 +463,23 @@ export async function PATCH(request: Request) {
         );
       }
     }
+
+    const existingActive = existingUser.active === true;
+    const activeChanged =
+      body.active !== undefined && body.active !== existingActive;
+
+    if (
+      (body.password !== undefined || activeChanged) &&
+      !existingUser?.authUid
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "User is not linked to Firebase Authentication.",
+        },
+        { status: 400 }
+      );
+    }
     // Update name
     if (body.name !== undefined) {
       if (typeof body.name !== "string" || !body.name.trim()) {
@@ -639,13 +656,60 @@ export async function PATCH(request: Request) {
       updates.permissions = requestedPermissions;
     }
 
+    const authUpdates: {
+      password?: string;
+      disabled?: boolean;
+    } = {};
+
     if (body.password !== undefined) {
-      await adminAuth.updateUser(existingUser.authUid, {
-        password: body.password,
-      });
+      authUpdates.password = body.password;
     }
 
-    await userRef.update(updates);
+    if (activeChanged) {
+      authUpdates.disabled = body.active === false;
+    }
+
+    let previousAuthDisabled: boolean | undefined;
+    let authDisabledChanged = false;
+
+    try {
+      if (Object.keys(authUpdates).length > 0) {
+        const authUser = await adminAuth.getUser(existingUser.authUid);
+        previousAuthDisabled = authUser.disabled;
+
+        await adminAuth.updateUser(existingUser.authUid, authUpdates);
+        authDisabledChanged =
+          authUpdates.disabled !== undefined &&
+          authUpdates.disabled !== previousAuthDisabled;
+      }
+
+      if (
+        body.password !== undefined ||
+        (activeChanged && body.active === false)
+      ) {
+        await adminAuth.revokeRefreshTokens(existingUser.authUid);
+      }
+
+      await userRef.update(updates);
+    } catch (mutationError) {
+      if (
+        authDisabledChanged &&
+        previousAuthDisabled !== undefined
+      ) {
+        try {
+          await adminAuth.updateUser(existingUser.authUid, {
+            disabled: previousAuthDisabled,
+          });
+        } catch (rollbackError) {
+          console.error(
+            "Failed to rollback Firebase Auth disabled state:",
+            rollbackError
+          );
+        }
+      }
+
+      throw mutationError;
+    }
 
     const updatedSnapshot = await userRef.get();
     const updatedData = updatedSnapshot.data();
