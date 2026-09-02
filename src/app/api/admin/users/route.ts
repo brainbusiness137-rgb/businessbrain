@@ -5,10 +5,66 @@ import {
 } from "@/lib/auth";
 import { adminAuth, adminDb } from "@/lib/firebase-admin";
 import {
-  getDefaultPermissions,
+  canActorGrantPermission,
+  canAssignPlatformRole,
+  canManagePlatformUser,
+  canModifyPlatformPermissions,
+  canModifyPlatformRole,
+  getGrantableDefaultPermissions,
+  hasPlatformAuthority,
+  isPermission,
+  isPermissionWithinRoleCeiling,
+  isPlatformRole,
+  PERMISSIONS,
   ROLES,
-  PlatformRole,
+  Permission,
 } from "@/lib/permissions";
+
+const OWNER_CRITICAL_PERMISSIONS: Permission[] = [
+  PERMISSIONS.manageUsers,
+  PERMISSIONS.manageRoles,
+  PERMISSIONS.managePermissions,
+];
+
+function forbidden(message: string) {
+  return NextResponse.json(
+    { success: false, message },
+    { status: 403 }
+  );
+}
+
+async function isLastActiveOwner(userId: string): Promise<boolean> {
+  const snapshot = await adminDb
+    .collection("platformUsers")
+    .where("role", "==", ROLES.platform_owner)
+    .where("active", "==", true)
+    .get();
+
+  return (
+    snapshot.docs.some((doc) => doc.id === userId) &&
+    snapshot.size <= 1
+  );
+}
+
+function normalizePermissions(
+  permissions: Record<string, unknown> | undefined
+): Record<Permission, boolean> {
+  return Object.fromEntries(
+    Object.values(PERMISSIONS).map((permission) => [
+      permission,
+      permissions?.[permission] === true,
+    ])
+  ) as Record<Permission, boolean>;
+}
+
+function permissionsEqual(
+  left: Record<Permission, boolean>,
+  right: Record<Permission, boolean>
+): boolean {
+  return Object.values(PERMISSIONS).every(
+    (permission) => left[permission] === right[permission]
+  );
+}
 export async function GET() {
   try {
     const currentUser = await getCurrentPlatformUser();
@@ -23,7 +79,7 @@ export async function GET() {
       );
     }
 
-    if (currentUser.permissions?.manageUsers !== true) {
+    if (!hasPlatformAuthority(currentUser, PERMISSIONS.manageUsers)) {
       return NextResponse.json(
         {
           success: false,
@@ -83,7 +139,7 @@ export async function POST(request: Request) {
     }
 
     // 2. Verify permission
-    if (currentUser.permissions?.manageUsers !== true) {
+    if (!hasPlatformAuthority(currentUser, PERMISSIONS.manageUsers)) {
       return NextResponse.json(
         {
           success: false,
@@ -122,7 +178,7 @@ export async function POST(request: Request) {
     }
 
     // 5. Validate role
-    if (!Object.values(ROLES).includes(role as PlatformRole)) {
+    if (!isPlatformRole(role)) {
       return NextResponse.json(
         {
           success: false,
@@ -143,10 +199,29 @@ export async function POST(request: Request) {
       );
     }
 
-    const platformRole = role as PlatformRole;
+    const platformRole = role;
+
+    if (!canAssignPlatformRole(currentUser, platformRole)) {
+      return forbidden(
+        "You are not authorized to assign this platform role. Platform ownership requires the dedicated ownership transfer workflow."
+      );
+    }
+
+    if (body.permissions !== undefined) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Individual permissions cannot be supplied during platform user creation.",
+        },
+        { status: 400 }
+      );
+    }
 
     // 7. Generate default permissions from role
-    const permissions = getDefaultPermissions(platformRole);
+    const permissions = getGrantableDefaultPermissions(
+      currentUser,
+      platformRole
+    );
 
     // 8. Create Firebase Authentication user
     const authUser = await adminAuth.createUser({
@@ -246,7 +321,7 @@ export async function PATCH(request: Request) {
       );
     }
 
-    if (currentUser.permissions?.manageUsers !== true) {
+    if (!hasPlatformAuthority(currentUser, PERMISSIONS.manageUsers)) {
       return NextResponse.json(
         {
           success: false,
@@ -289,38 +364,105 @@ export async function PATCH(request: Request) {
 
     const existingUser = userSnapshot.data();
 
+    if (!isPlatformRole(existingUser?.role)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "The target user has an invalid platform role.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const existingRole = existingUser.role;
+    const isSelf = currentUser.id === userId;
+    const isOwnerTarget = existingRole === ROLES.platform_owner;
+
+    if (isOwnerTarget && !isSelf) {
+      return forbidden(
+        "Platform owners cannot be modified through ordinary user management."
+      );
+    }
+
+    if (!isOwnerTarget && !canManagePlatformUser(currentUser, existingRole)) {
+      return forbidden("You are not authorized to manage this platform user.");
+    }
+
+    if (isOwnerTarget && currentUser.role !== ROLES.platform_owner) {
+      return forbidden("Only a platform owner may modify their own account.");
+    }
+
+    const requestedRole = body.role ?? existingRole;
+
+    if (!isPlatformRole(requestedRole)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid platform role.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const roleChanged = requestedRole !== existingRole;
+
+    if (roleChanged) {
+      if (isOwnerTarget || requestedRole === ROLES.platform_owner) {
+        return forbidden(
+          "Platform ownership cannot be created, transferred, or removed through ordinary user management."
+        );
+      }
+
+      if (!canModifyPlatformRole(currentUser, existingRole, requestedRole)) {
+        return forbidden(
+          "Changing a platform role requires manageRoles and sufficient role authority."
+        );
+      }
+    }
+
+    if (
+      isOwnerTarget &&
+      body.active === false
+    ) {
+      if (await isLastActiveOwner(userId)) {
+        return forbidden("The last active platform owner cannot be deactivated.");
+      }
+
+      return forbidden(
+        "A platform owner cannot deactivate their account through ordinary user management."
+      );
+    }
+
     const updates: Record<string, unknown> = {
       updatedAt: FieldValue.serverTimestamp(),
     };
-// Update password
-if (body.password !== undefined) {
-  if (
-    typeof body.password !== "string" ||
-    body.password.length < 6
-  ) {
-    return NextResponse.json(
-      {
-        success: false,
-        message: "Password must be at least 6 characters.",
-      },
-      { status: 400 }
-    );
-  }
 
-  if (!existingUser?.authUid) {
-    return NextResponse.json(
-      {
-        success: false,
-        message: "User is not linked to Firebase Authentication.",
-      },
-      { status: 400 }
-    );
-  }
+    // Validate password before any external mutation. The Auth update occurs
+    // only after every role/permission/owner policy check has passed.
+    if (body.password !== undefined) {
+      if (
+        typeof body.password !== "string" ||
+        body.password.length < 6
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Password must be at least 6 characters.",
+          },
+          { status: 400 }
+        );
+      }
 
-  await adminAuth.updateUser(existingUser.authUid, {
-    password: body.password,
-  });
-}
+      if (!existingUser?.authUid) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "User is not linked to Firebase Authentication.",
+          },
+          { status: 400 }
+        );
+      }
+    }
     // Update name
     if (body.name !== undefined) {
       if (typeof body.name !== "string" || !body.name.trim()) {
@@ -335,30 +477,6 @@ if (body.password !== undefined) {
 
       updates.name = body.name.trim();
     }
-
-    // Update role
-if (body.role !== undefined) {
-  if (
-    typeof body.role !== "string" ||
-    !Object.values(ROLES).includes(
-      body.role as PlatformRole
-    )
-  ) {
-    return NextResponse.json(
-      {
-        success: false,
-        message: "Invalid platform role.",
-      },
-      { status: 400 }
-    );
-  }
-
-  const newRole = body.role as PlatformRole;
-
-  updates.role = newRole;
-  updates.permissions =
-    getDefaultPermissions(newRole);
-}
 
     // Update active status
     if (body.active !== undefined) {
@@ -391,46 +509,140 @@ if (body.role !== undefined) {
         );
       }
 
-      const defaultPermissions = getDefaultPermissions(
-        (
-          body.role ??
-          existingUser?.role
-        ) as PlatformRole
-      );
-
       const incomingPermissions = body.permissions as Record<
         string,
         unknown
       >;
 
-      const validatedPermissions: Record<
+      for (const permissionKey of Object.keys(incomingPermissions)) {
+        if (!isPermission(permissionKey)) {
+          return NextResponse.json(
+            {
+              success: false,
+              message: `Unknown platform permission: ${permissionKey}`,
+            },
+            { status: 400 }
+          );
+        }
+
+        const value = incomingPermissions[permissionKey];
+
+        if (typeof value !== "boolean") {
+          return NextResponse.json(
+            {
+              success: false,
+              message: `Invalid value for permission: ${permissionKey}`,
+            },
+            { status: 400 }
+          );
+        }
+      }
+    }
+
+    const currentPermissions = normalizePermissions(
+      existingUser.permissions as Record<string, unknown> | undefined
+    );
+    const roleDefaultPermissions = roleChanged
+      ? getGrantableDefaultPermissions(
+          currentUser,
+          requestedRole,
+          currentPermissions
+        )
+      : currentPermissions;
+    const requestedPermissions = {
+      ...roleDefaultPermissions,
+    };
+    let individualPermissionsChanged = false;
+
+    if (body.permissions !== undefined) {
+      const incomingPermissions = body.permissions as Record<
         string,
         boolean
-      > = {
-        ...defaultPermissions,
-      };
+      >;
 
-      for (const permission of Object.keys(defaultPermissions)) {
-        if (incomingPermissions[permission] !== undefined) {
-          if (
-            typeof incomingPermissions[permission] !==
-            "boolean"
-          ) {
-            return NextResponse.json(
-              {
-                success: false,
-                message: `Invalid value for permission: ${permission}`,
-              },
-              { status: 400 }
+      for (const permissionKey of Object.keys(incomingPermissions)) {
+        requestedPermissions[permissionKey as Permission] =
+          incomingPermissions[permissionKey];
+      }
+
+      individualPermissionsChanged = !permissionsEqual(
+        requestedPermissions,
+        roleDefaultPermissions
+      );
+
+      if (individualPermissionsChanged) {
+        if (!canModifyPlatformPermissions(currentUser, existingRole)) {
+          if (!isOwnerTarget || !isSelf) {
+            return forbidden(
+              "Changing individual permissions requires managePermissions and authority over the target user."
             );
           }
 
-          validatedPermissions[permission] =
-            incomingPermissions[permission] as boolean;
+          if (
+            !hasPlatformAuthority(
+              currentUser,
+              PERMISSIONS.managePermissions
+            )
+          ) {
+            return forbidden(
+              "Changing individual permissions requires managePermissions."
+            );
+          }
+        }
+
+        for (const permission of Object.values(PERMISSIONS)) {
+          if (
+            requestedPermissions[permission] &&
+            !isPermissionWithinRoleCeiling(requestedRole, permission)
+          ) {
+            return forbidden(
+              `Permission ${permission} exceeds the ${requestedRole} role ceiling.`
+            );
+          }
+
+          const becomesGranted =
+            requestedPermissions[permission] &&
+            currentPermissions[permission] !== true;
+
+          if (
+            becomesGranted &&
+            !canActorGrantPermission(currentUser, permission)
+          ) {
+            return forbidden(
+              `You are not authorized to grant permission: ${permission}`
+            );
+          }
+        }
+
+        if (isOwnerTarget) {
+          const removesCriticalOwnerAuthority =
+            OWNER_CRITICAL_PERMISSIONS.some(
+              (permission) =>
+                currentPermissions[permission] === true &&
+                requestedPermissions[permission] !== true
+            );
+
+          if (removesCriticalOwnerAuthority) {
+            return forbidden(
+              "Critical platform owner authority cannot be removed through ordinary user management."
+            );
+          }
         }
       }
+    }
 
-      updates.permissions = validatedPermissions;
+    if (roleChanged) {
+      updates.role = requestedRole;
+    }
+
+    if (roleChanged || individualPermissionsChanged) {
+      updates.permissions = requestedPermissions;
+    }
+
+    if (body.password !== undefined) {
+      await adminAuth.updateUser(existingUser.authUid, {
+        password: body.password,
+      });
     }
 
     await userRef.update(updates);
