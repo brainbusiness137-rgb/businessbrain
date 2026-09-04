@@ -77,6 +77,123 @@ function validMembershipRequest(body: Record<string, unknown>): boolean {
   );
 }
 
+export async function GET(request: Request) {
+  try {
+    const actorResult = await requireProjectProvisioningActor();
+
+    if ("error" in actorResult) return actorResult.error;
+
+    const searchParams = new URL(request.url).searchParams;
+    const allowedQueryParameters = new Set(["companyId", "userId"]);
+
+    if (
+      [...searchParams.keys()].some(
+        (parameter) => !allowedQueryParameters.has(parameter)
+      ) ||
+      searchParams.getAll("companyId").length !== 1 ||
+      searchParams.getAll("userId").length !== 1
+    ) {
+      return NextResponse.json(
+        { success: false, message: "Unexpected project membership query." },
+        { status: 400 }
+      );
+    }
+
+    const companyId = searchParams.get("companyId");
+    const userId = searchParams.get("userId");
+
+    if (
+      !companyId ||
+      !isValidFirestoreDocumentId(companyId) ||
+      !userId ||
+      !isValidFirestoreDocumentId(userId)
+    ) {
+      return NextResponse.json(
+        { success: false, message: "A valid company and user are required." },
+        { status: 400 }
+      );
+    }
+
+    const userSnapshot = await adminDb.collection("users").doc(userId).get();
+    const companyUser = userSnapshot.exists
+      ? parsePersistedCompanyUser(userSnapshot.id, userSnapshot.data())
+      : null;
+
+    if (!companyUser) {
+      return NextResponse.json(
+        { success: false, message: "Company user not found." },
+        { status: 404 }
+      );
+    }
+
+    if (companyUser.companyId !== companyId) {
+      return NextResponse.json(
+        { success: false, message: "Company user relationship does not match." },
+        { status: 409 }
+      );
+    }
+
+    const snapshot = await adminDb
+      .collection("projectMembers")
+      .where("companyId", "==", companyId)
+      .where("userId", "==", userId)
+      .get();
+
+    const candidateMemberships = snapshot.docs.flatMap((document) => {
+      const data = document.data();
+
+      if (
+        data.companyId !== companyId ||
+        data.userId !== userId ||
+        !isValidFirestoreDocumentId(data.projectId) ||
+        typeof data.active !== "boolean"
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          companyId,
+          projectId: data.projectId,
+          userId,
+          active: data.active,
+        },
+      ];
+    });
+
+    const projectIds = [
+      ...new Set(candidateMemberships.map(({ projectId }) => projectId)),
+    ];
+    const projectSnapshots = projectIds.length
+      ? await adminDb.getAll(
+          ...projectIds.map((projectId) =>
+            adminDb.collection("projects").doc(projectId)
+          )
+        )
+      : [];
+    const validProjectIds = new Set(
+      projectSnapshots
+        .filter(
+          (projectSnapshot) =>
+            projectSnapshot.exists &&
+            projectSnapshot.data()?.companyId === companyId
+        )
+        .map((projectSnapshot) => projectSnapshot.id)
+    );
+    const memberships = candidateMemberships.filter(({ projectId }) =>
+      validProjectIds.has(projectId)
+    );
+
+    return NextResponse.json({ success: true, memberships });
+  } catch (error) {
+    console.error("Project membership listing failed:", error);
+    return NextResponse.json(
+      { success: false, message: "Project membership listing failed." },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const actorResult = await requireProjectProvisioningActor();

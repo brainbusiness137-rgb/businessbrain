@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 
 type Company = {
   id: string;
@@ -636,6 +637,13 @@ async function handleSaveCompany() {
     >
       {company.active ? "تعطيل" : "تفعيل"}
     </button>
+
+    <Link
+      href={`/dashboard/company-users?companyId=${encodeURIComponent(company.id)}`}
+      className="rounded-lg border px-4 py-2 text-sm hover:bg-gray-50"
+    >
+      مستخدمو الشركة
+    </Link>
   </div>
 </td>
                     </tr>

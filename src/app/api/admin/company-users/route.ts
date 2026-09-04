@@ -22,6 +22,7 @@ import {
   companyUserDocumentId,
   platformActorPath,
 } from "@/lib/tenant-model";
+import { parsePersistedCompanyUser } from "@/lib/tenant-auth";
 
 class ProvisioningError extends Error {
   constructor(
@@ -45,6 +46,64 @@ function provisioningError(error: unknown) {
     { success: false, message: "Company user provisioning failed." },
     { status: 500 }
   );
+}
+
+export async function GET(request: Request) {
+  try {
+    const actor = await getCurrentPlatformUser();
+
+    if (!actor) {
+      return NextResponse.json(
+        { success: false, message: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    if (!hasPlatformAuthority(actor, PERMISSIONS.manageCompanies)) {
+      return NextResponse.json(
+        { success: false, message: "Company administration is required." },
+        { status: 403 }
+      );
+    }
+
+    const companyId = new URL(request.url).searchParams.get("companyId");
+
+    if (!companyId || !isValidFirestoreDocumentId(companyId)) {
+      return NextResponse.json(
+        { success: false, message: "A valid company is required." },
+        { status: 400 }
+      );
+    }
+
+    const snapshot = await adminDb
+      .collection("users")
+      .where("companyId", "==", companyId)
+      .get();
+
+    const users = snapshot.docs
+      .map((document) =>
+        parsePersistedCompanyUser(document.id, document.data())
+      )
+      .filter((user) => user !== null)
+      .map(({ id, companyId, name, email, role, active, language }) => ({
+        id,
+        companyId,
+        name,
+        email,
+        role,
+        active,
+        language,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name, "ar"));
+
+    return NextResponse.json({ success: true, users });
+  } catch (error) {
+    console.error("Company user listing failed:", error);
+    return NextResponse.json(
+      { success: false, message: "Company user listing failed." },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(request: Request) {
