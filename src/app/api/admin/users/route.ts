@@ -5,6 +5,12 @@ import {
 } from "@/lib/auth";
 import { adminAuth, adminDb } from "@/lib/firebase-admin";
 import {
+  hasOnlyAllowedFields,
+  isValidEmail,
+  isValidFirestoreDocumentId,
+  readJsonObject,
+} from "@/lib/request-validation";
+import {
   canActorGrantPermission,
   canAssignPlatformRole,
   canManagePlatformUser,
@@ -150,7 +156,25 @@ export async function POST(request: Request) {
     }
 
     // 3. Read request body
-    const body = await request.json();
+    const body = await readJsonObject(request);
+
+    if (
+      !body ||
+      !hasOnlyAllowedFields(body, [
+        "name",
+        "email",
+        "password",
+        "role",
+      ])
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid request body.",
+        },
+        { status: 400 }
+      );
+    }
 
     const name =
       typeof body.name === "string" ? body.name.trim() : "";
@@ -189,7 +213,7 @@ export async function POST(request: Request) {
     }
 
     // 6. Basic password validation
-    if (password.length < 6) {
+    if (password.length < 6 || password.length > 4096) {
       return NextResponse.json(
         {
           success: false,
@@ -204,6 +228,16 @@ export async function POST(request: Request) {
     if (!canAssignPlatformRole(currentUser, platformRole)) {
       return forbidden(
         "You are not authorized to assign this platform role. Platform ownership requires the dedicated ownership transfer workflow."
+      );
+    }
+
+    if (name.length > 200 || !isValidEmail(email)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid name or email address.",
+        },
+        { status: 400 }
       );
     }
 
@@ -331,12 +365,32 @@ export async function PATCH(request: Request) {
       );
     }
 
-    const body = await request.json();
+    const body = await readJsonObject(request);
+
+    if (
+      !body ||
+      !hasOnlyAllowedFields(body, [
+        "userId",
+        "name",
+        "password",
+        "role",
+        "permissions",
+        "active",
+      ])
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: "Invalid request body.",
+        },
+        { status: 400 }
+      );
+    }
 
     const userId =
       typeof body.userId === "string" ? body.userId.trim() : "";
 
-    if (!userId) {
+    if (!isValidFirestoreDocumentId(userId)) {
       return NextResponse.json(
         {
           success: false,
@@ -442,7 +496,8 @@ export async function PATCH(request: Request) {
     if (body.password !== undefined) {
       if (
         typeof body.password !== "string" ||
-        body.password.length < 6
+        body.password.length < 6 ||
+        body.password.length > 4096
       ) {
         return NextResponse.json(
           {
@@ -482,7 +537,11 @@ export async function PATCH(request: Request) {
     }
     // Update name
     if (body.name !== undefined) {
-      if (typeof body.name !== "string" || !body.name.trim()) {
+      if (
+        typeof body.name !== "string" ||
+        !body.name.trim() ||
+        body.name.trim().length > 200
+      ) {
         return NextResponse.json(
           {
             success: false,

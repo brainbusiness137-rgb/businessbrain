@@ -3,6 +3,10 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getCurrentPlatformUser } from "@/lib/auth";
 import { adminDb } from "@/lib/firebase-admin";
+import {
+  hasPlatformAuthority,
+  PERMISSIONS,
+} from "@/lib/permissions";
 
 export async function GET(request: Request) {
   try {
@@ -15,7 +19,12 @@ export async function GET(request: Request) {
       );
     }
 
-    if (currentUser.permissions?.manageProjects !== true) {
+    if (
+      !hasPlatformAuthority(
+        currentUser,
+        PERMISSIONS.manageProjects
+      )
+    ) {
       return NextResponse.json(
         {
           success: false,
@@ -92,7 +101,12 @@ export async function POST(request: Request) {
       );
     }
 
-    if (currentUser.permissions?.manageProjects !== true) {
+    if (
+      !hasPlatformAuthority(
+        currentUser,
+        PERMISSIONS.manageProjects
+      )
+    ) {
       return NextResponse.json(
         {
           success: false,
@@ -254,7 +268,12 @@ export async function PATCH(request: Request) {
       );
     }
 
-    if (currentUser.permissions?.manageProjects !== true) {
+    if (
+      !hasPlatformAuthority(
+        currentUser,
+        PERMISSIONS.manageProjects
+      )
+    ) {
       return NextResponse.json(
         {
           success: false,

@@ -6,6 +6,10 @@ import {
   SESSION_COOKIE_NAME,
   sessionCookieOptions,
 } from "@/lib/auth-security";
+import {
+  hasOnlyAllowedFields,
+  readJsonObject,
+} from "@/lib/request-validation";
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,9 +20,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { idToken } = await request.json();
+    const body = await readJsonObject(request);
 
-    if (!idToken || typeof idToken !== "string") {
+    if (!body || !hasOnlyAllowedFields(body, ["idToken"])) {
+      return NextResponse.json(
+        { success: false, message: "Invalid request body" },
+        { status: 400 }
+      );
+    }
+
+    const { idToken } = body;
+
+    if (
+      typeof idToken !== "string" ||
+      !idToken ||
+      idToken.length > 10_000
+    ) {
       return NextResponse.json(
         { success: false, message: "ID token is required" },
         { status: 400 }
