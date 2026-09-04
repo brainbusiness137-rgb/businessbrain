@@ -3,11 +3,13 @@
 import { FormEvent, useState } from "react";
 import { signInWithEmailAndPassword } from "firebase/auth";
 import { getAuth } from "firebase/auth";
+import { useRouter } from "next/navigation";
 import app from "@/lib/firebase";
 
 const auth = getAuth(app);
 
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
@@ -46,7 +48,8 @@ export default function LoginPage() {
 
       setMessage("تم تسجيل الدخول بنجاح");
 
-      window.location.href = "/dashboard";
+      router.replace("/workspace");
+      router.refresh();
     } catch (error) {
       console.error(error);
       setMessage("البريد الإلكتروني أو كلمة المرور غير صحيحة");

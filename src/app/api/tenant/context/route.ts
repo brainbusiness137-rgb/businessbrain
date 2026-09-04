@@ -6,6 +6,11 @@ import {
   TenantAccessError,
 } from "@/lib/tenant-auth";
 import { adminDb } from "@/lib/firebase-admin";
+import {
+  filterValidOrganizationHierarchy,
+  parsePersistedOrganizationUnit,
+  parsePersistedOrganizationUnitMembership,
+} from "@/lib/organization-units";
 
 export async function GET() {
   try {
@@ -16,10 +21,18 @@ export async function GET() {
     }
 
     const { company } = await requireCompanyAccess(user.companyId, user);
-    const memberships = await adminDb
-      .collection("projectMembers")
-      .where("userId", "==", user.id)
-      .get();
+    const [memberships, organizationSnapshot, organizationMembershipSnapshot] =
+      await Promise.all([
+        adminDb.collection("projectMembers").where("userId", "==", user.id).get(),
+        adminDb
+          .collection("organizationUnits")
+          .where("companyId", "==", user.companyId)
+          .get(),
+        adminDb
+          .collection("organizationUnitMembers")
+          .where("userId", "==", user.id)
+          .get(),
+      ]);
     const projectIds = Array.from(
       new Set(
         memberships.docs
@@ -39,6 +52,35 @@ export async function GET() {
     const projects = projectResults.flatMap((result) =>
       result.status === "fulfilled" ? [result.value.project] : []
     );
+    const organizationUnits = filterValidOrganizationHierarchy(
+      organizationSnapshot.docs.flatMap((document) => {
+        const unit = parsePersistedOrganizationUnit(
+          document.id,
+          document.data()
+        );
+        return unit && unit.companyId === user.companyId ? [unit] : [];
+      }),
+      user.companyId
+    )
+      .filter((unit) => unit.active)
+      .sort((left, right) => left.name.localeCompare(right.name, "ar"));
+    const organizationUnitIds = new Set(
+      organizationUnits.map((unit) => unit.id)
+    );
+    const writableOrganizationUnitIds = organizationMembershipSnapshot.docs
+      .flatMap((document) => {
+        const membership = parsePersistedOrganizationUnitMembership(
+          document.id,
+          document.data()
+        );
+        return membership &&
+          membership.active &&
+          membership.companyId === user.companyId &&
+          membership.userId === user.id &&
+          organizationUnitIds.has(membership.organizationUnitId)
+          ? [membership.organizationUnitId]
+          : [];
+      });
 
     return NextResponse.json({
       success: true,
@@ -53,6 +95,8 @@ export async function GET() {
       },
       company,
       projects,
+      organizationUnits,
+      writableOrganizationUnitIds,
     });
   } catch (error) {
     if (error instanceof TenantAccessError) {
