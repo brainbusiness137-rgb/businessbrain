@@ -45,3 +45,23 @@ export function isValidFirestoreDocumentId(value: string): boolean {
     !/^__.*__$/.test(value)
   );
 }
+
+export function isValidFirebaseUid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    new TextEncoder().encode(value).length <= 128 &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
+}
+
+export function isValidRequiredString(
+  value: unknown,
+  maxLength: number
+): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.trim().length <= maxLength
+  );
+}
