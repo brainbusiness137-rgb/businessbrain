@@ -30,6 +30,11 @@ export default async function DashboardLayout({
       visible: hasPlatformAuthority(user, PERMISSIONS.manageCompanies),
     },
     {
+      href: "/dashboard/organization",
+      label: "الهيكل التنظيمي",
+      visible: hasPlatformAuthority(user, PERMISSIONS.manageCompanies),
+    },
+    {
       href: "/dashboard/projects",
       label: "المشاريع",
       visible: hasPlatformAuthority(user, PERMISSIONS.manageProjects),

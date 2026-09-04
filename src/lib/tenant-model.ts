@@ -10,17 +10,50 @@ export function projectMembershipDocumentId(
   projectId: string,
   userId: string
 ): string | null {
-  const encodedProjectId = Buffer.from(projectId, "utf8").toString(
+  return orderedPairDocumentId("p", projectId, "u", userId);
+}
+
+export function organizationUnitMembershipDocumentId(
+  organizationUnitId: string,
+  userId: string
+): string | null {
+  return orderedPairDocumentId(
+    "o",
+    organizationUnitId,
+    "u",
+    userId
+  );
+}
+
+export function projectOrganizationUnitDocumentId(
+  projectId: string,
+  organizationUnitId: string
+): string | null {
+  return orderedPairDocumentId(
+    "p",
+    projectId,
+    "o",
+    organizationUnitId
+  );
+}
+
+function orderedPairDocumentId(
+  firstLabel: string,
+  firstValue: string,
+  secondLabel: string,
+  secondValue: string
+): string | null {
+  const encodedFirstValue = Buffer.from(firstValue, "utf8").toString(
     "base64url"
   );
-  const encodedUserId = Buffer.from(userId, "utf8").toString(
+  const encodedSecondValue = Buffer.from(secondValue, "utf8").toString(
     "base64url"
   );
-  const documentId = `p.${encodedProjectId}.u.${encodedUserId}`;
+  const documentId = `${firstLabel}.${encodedFirstValue}.${secondLabel}.${encodedSecondValue}`;
 
   if (
-    encodedProjectId.length === 0 ||
-    encodedUserId.length === 0 ||
+    encodedFirstValue.length === 0 ||
+    encodedSecondValue.length === 0 ||
     Buffer.byteLength(documentId, "utf8") > 1500
   ) {
     return null;

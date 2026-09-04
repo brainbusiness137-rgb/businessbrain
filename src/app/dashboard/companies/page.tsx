@@ -644,6 +644,12 @@ async function handleSaveCompany() {
     >
       مستخدمو الشركة
     </Link>
+    <Link
+      href={`/dashboard/organization?companyId=${encodeURIComponent(company.id)}`}
+      className="rounded-lg border px-4 py-2 text-sm hover:bg-gray-50"
+    >
+      الهيكل التنظيمي
+    </Link>
   </div>
 </td>
                     </tr>
