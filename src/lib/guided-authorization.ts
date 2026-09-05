@@ -4,6 +4,7 @@ import { parsePersistedOrganizationUnitMembership } from "@/lib/organization-uni
 import { CompanyUser, getCurrentCompanyUser, parsePersistedCompanyUser, requireProjectAccess, TenantAccessError } from "@/lib/tenant-auth";
 import { organizationUnitMembershipDocumentId, projectMembershipDocumentId } from "@/lib/tenant-model";
 import { requireProcedureWriteContext } from "@/lib/procedure-authorization";
+import { canAccessRawQualitySession } from "@/lib/quality-authorization";
 
 export class GuidedAccessError extends Error {
   constructor(message: string, public readonly status: 400 | 401 | 403 | 404 | 409) { super(message); }
@@ -15,10 +16,7 @@ export async function requireGuidedActor() {
   return actor;
 }
 export function canAccessRawSession(actor: CompanyUser, session: DocumentationSession) {
-  if (actor.companyId !== session.companyId || actor.role === "president") return false;
-  if (actor.role === "project_manager") return true;
-  if (actor.role === "employee") return session.subjectType === "user" && session.subjectUserId === actor.id;
-  return true;
+  return canAccessRawQualitySession(actor, session);
 }
 export async function requireSessionAccess(sessionId: string, actor: CompanyUser) {
   const snapshot = await adminDb.collection("documentationSessions").doc(sessionId).get();

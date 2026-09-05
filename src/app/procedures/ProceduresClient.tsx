@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import QualityPanel from "@/components/QualityPanel";
 
 type Project = { id: string; name: string; code: string };
 type Unit = { id: string; name: string; parentId: string | null };
@@ -16,6 +17,7 @@ type Procedure = {
   frequency: { type: string; interval?: number; description?: string };
   status: "draft" | "in_progress" | "ready_for_review";
   active: boolean;
+  outputs?: Array<{ name: string; description?: string }>;
 };
 type Step = {
   id: string;
@@ -26,6 +28,7 @@ type Step = {
   name: string;
   description?: string;
   organizationUnitId?: string;
+  performer?: { type: string; role?: string; description?: string; userId?: string };
   active: boolean;
 };
 type Context = {
@@ -37,6 +40,7 @@ type Context = {
 
 const inputClass = "w-full rounded-lg border border-slate-300 bg-white px-3 py-2";
 const buttonClass = "rounded-lg bg-blue-700 px-4 py-2 font-medium text-white disabled:opacity-50";
+function namedLines(value: FormDataEntryValue | null, existing: Array<{ name: string; description?: string }> = []) { const byName = new Map(existing.map((item) => [item.name, item])); return String(value ?? "").split("\n").map((line) => line.trim()).filter(Boolean).map((name) => byName.get(name) ?? { name }); }
 
 class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -161,6 +165,7 @@ export default function ProceduresClient() {
           description: form.get("description") || undefined,
           trigger: { type: form.get("triggerType") },
           frequency: { type: form.get("frequencyType") },
+          ...(String(form.get("outputs") ?? "").trim() ? { outputs: namedLines(form.get("outputs")) } : {}),
           status: "draft",
           active: true,
         }),
@@ -189,6 +194,7 @@ export default function ProceduresClient() {
           organizationUnitId: form.get("organizationUnitId"),
           status: form.get("status"),
           active: form.get("active") === "on",
+          outputs: namedLines(form.get("outputs"), selected.outputs),
         }),
       });
       await loadProcedures();
@@ -217,6 +223,7 @@ export default function ProceduresClient() {
           description: form.get("description") || undefined,
           organizationUnitId: organizationUnitId || undefined,
           active: true,
+          ...(String(form.get("performerRole") ?? "").trim() ? { performer: { type: "role", role: form.get("performerRole") } } : {}),
         }),
       });
       formElement.reset();
@@ -257,6 +264,7 @@ export default function ProceduresClient() {
           name: form.get("name"),
           description: form.get("description"),
           ...(organizationUnitId ? { organizationUnitId } : {}),
+          ...(String(form.get("performerRole") ?? "").trim() ? { performer: { type: "role", role: form.get("performerRole") } } : {}),
         }),
       });
       await openProcedure(selected);
@@ -306,6 +314,7 @@ export default function ProceduresClient() {
             </select>
             <textarea required name="objective" maxLength={2000} className={inputClass} placeholder="الهدف" />
             <textarea name="description" maxLength={5000} className={inputClass} placeholder="وصف اختياري" />
+            <textarea name="outputs" maxLength={20000} className={inputClass} placeholder="المخرجات النهائية — مخرج في كل سطر" />
             <select name="triggerType" className={inputClass} defaultValue="event">
               <option value="scheduled">مجدول</option><option value="event">حدث</option><option value="request">طلب</option>
               <option value="condition">شرط</option><option value="other">أخرى</option>
@@ -340,6 +349,7 @@ export default function ProceduresClient() {
           {!selected ? <p className="text-slate-500">افتح إجراءً لعرض تفاصيله وخطواته.</p> : (
             <div className="space-y-5">
               <div><h2 className="text-xl font-semibold">{selected.name}</h2><p className="mt-1 text-slate-600">{selected.objective}</p></div>
+              <QualityPanel url={`/api/tenant/quality-assessments?procedureId=${encodeURIComponent(selected.id)}`} refreshKey={steps.map((step) => `${step.id}:${step.sequence}:${step.active}`).join("|")} />
               {canWrite && (
                 <details>
                   <summary className="cursor-pointer font-medium">تعديل بيانات الإجراء</summary>
@@ -350,6 +360,7 @@ export default function ProceduresClient() {
                     </select>
                     <textarea required name="objective" maxLength={2000} defaultValue={selected.objective} className={inputClass} />
                     <textarea name="description" maxLength={5000} defaultValue={selected.description ?? ""} className={inputClass} />
+                    <textarea name="outputs" maxLength={20000} defaultValue={selected.outputs?.map((item) => item.name).join("\n") ?? ""} className={inputClass} placeholder="المخرجات النهائية — مخرج في كل سطر" />
                     <select name="status" defaultValue={selected.status} className={inputClass}>
                       <option value="draft">مسودة</option><option value="in_progress">قيد الإعداد</option><option value="ready_for_review">جاهز للمراجعة</option>
                     </select>
@@ -374,6 +385,7 @@ export default function ProceduresClient() {
                             <input required name="sequence" type="number" min={1} step={1} defaultValue={step.sequence} className={inputClass} />
                             <input required name="name" maxLength={200} defaultValue={step.name} className={inputClass} />
                             <textarea name="description" maxLength={5000} defaultValue={step.description ?? ""} className={inputClass} />
+                            <input name="performerRole" maxLength={200} defaultValue={step.performer?.type === "role" ? step.performer.role ?? "" : ""} className={inputClass} placeholder="الدور المسؤول عن التنفيذ" />
                             <select name="organizationUnitId" defaultValue={step.organizationUnitId ?? ""} className={inputClass}>
                               <option value="">الوحدة المالكة للإجراء</option>
                               {context.organizationUnits.map((unit) => <option key={unit.id} value={unit.id}>{unit.name}</option>)}
@@ -393,6 +405,7 @@ export default function ProceduresClient() {
                     <input required name="sequence" type="number" min={1} step={1} className={inputClass} placeholder="الترتيب" />
                     <input required name="name" maxLength={200} className={inputClass} placeholder="اسم الخطوة" />
                     <textarea name="description" maxLength={5000} className={inputClass} placeholder="وصف اختياري" />
+                    <input name="performerRole" maxLength={200} className={inputClass} placeholder="الدور المسؤول عن التنفيذ" />
                     <select name="organizationUnitId" className={inputClass} defaultValue="">
                       <option value="">الوحدة المالكة للإجراء</option>
                       {context.organizationUnits.map((unit) => <option key={unit.id} value={unit.id}>{unit.name}</option>)}

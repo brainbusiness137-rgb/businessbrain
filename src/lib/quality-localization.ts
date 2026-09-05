@@ -1,0 +1,12 @@
+import type { QualityAssessment, QualityFinding } from "@/lib/quality-types";
+
+const ar: Record<string, string> = {
+  "discovery.prompt.missing": "لسه في سؤال استكشاف محتاج إجابة.", "discovery.prompt.uncertain": "إجابة استكشاف ما زالت محتاجة تأكيد.", "discovery.completion.unconfirmed": "لازم تأكيد اكتمال أسئلة الاستكشاف.",
+  "discovery.candidate.undispositioned": "في عمل مكتشف لسه محتاج تصنيف نهائي.", "discovery.candidate.unclear": "في عمل مكتشف ما زال غير واضح.", "discovery.candidate.none-after-positive-context": "ظهرت سياقات عمل، لكن لم تُسجل أعمال مرشحة بعد.",
+  "clarification.open": "في نقطة توضيح مفتوحة محتاجة متابعة.", "candidate.question.missing": "جزء مطلوب من توثيق الإجراء لسه ناقص.", "candidate.answer.uncertain": "إجابة مؤثرة على الإجراء ما زالت محتاجة تأكيد.",
+  "procedure.final-output.required": "الناتج النهائي للإجراء مش واضح.", "procedure.active-step.required": "الإجراء محتاج خطوة نشطة واحدة على الأقل.", "procedure.trigger.description-required-for-other": "نوع بداية الإجراء «أخرى» ويحتاج وصفًا واضحًا.", "procedure.frequency.description-required-for-other": "نوع التكرار «أخرى» ويُفضّل توضيحه.",
+  "step.sequence.duplicate": "في أكثر من خطوة بنفس الترتيب.", "step.sequence.discontinuous": "ترتيب الخطوات النشطة غير متصل.", "step.performer.required": "مين المسؤول عن تنفيذ هذه الخطوة؟", "step.review.performer-required": "المراجعة مطلوبة لكن مسؤول المراجعة غير محدد.", "step.approval.performer-required": "الاعتماد مطلوب لكن صاحب الاعتماد غير محدد.", "step.decision.question-required": "الخطوة نقطة قرار، لكن سؤال القرار غير محدد.", "step.waiting.without-dependency": "وقت انتظار مسجل من غير مدخل أو شرط واضح يفسره.", "step.permission.without-system": "في صلاحية مطلوبة لنظام غير مذكور ضمن أنظمة الخطوة.", "procedure.primary-unit.absent": "الوحدة الأساسية للإجراء غير ظاهرة في مسؤولية أي خطوة نشطة.", "step.consecutive-duplicate": "خطوتان متتاليتان لهما نفس الاسم والمسؤولية؛ راجعهما للتأكد.",
+};
+const en: Record<string, string> = { ...Object.fromEntries(Object.keys(ar).map((key) => [key, key])) };
+export type LocalizedFinding = Omit<QualityFinding, "messageKey" | "messageParams"> & { message: string };
+export function localizeAssessment(assessment: QualityAssessment, language: "ar" | "en" = "ar") { const catalog = language === "ar" ? ar : en; return { ...assessment, findings: assessment.findings.map(({ messageKey, messageParams, ...item }) => { void messageParams; return { ...item, message: catalog[messageKey] ?? messageKey }; }) as LocalizedFinding[] }; }

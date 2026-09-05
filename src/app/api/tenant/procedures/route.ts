@@ -11,18 +11,33 @@ import {
 } from "@/lib/procedure-authorization";
 import {
   parsePersistedProcedure,
+  parsePersistedProcedureStep,
   parseProcedureCreateInput,
   parseProcedurePatchInput,
   PROCEDURE_STATUSES,
   publicProcedure,
 } from "@/lib/procedures";
+import { assessProcedure } from "@/lib/quality-engine";
+import { localizeAssessment } from "@/lib/quality-localization";
 import { isValidFirestoreDocumentId, readJsonObject } from "@/lib/request-validation";
-import { requireProjectAccess, TenantAccessError } from "@/lib/tenant-auth";
+import { parsePersistedCompanyUser, requireProjectAccess, TenantAccessError } from "@/lib/tenant-auth";
 import { companyUserActorPath } from "@/lib/tenant-model";
 
 const PROCEDURE_LIST_LIMIT = 200;
 
+class ProcedureQualityGateError extends Error {
+  constructor(readonly assessment: ReturnType<typeof localizeAssessment>) {
+    super("Procedure has blocking quality findings.");
+  }
+}
+
 function errorResponse(error: unknown) {
+  if (error instanceof ProcedureQualityGateError) {
+    return NextResponse.json(
+      { success: false, message: error.message, assessment: error.assessment },
+      { status: 409 }
+    );
+  }
   if (error instanceof ProcedureAccessError || error instanceof TenantAccessError) {
     return NextResponse.json(
       { success: false, message: error.message },
@@ -225,6 +240,33 @@ export async function PATCH(request: Request) {
           current.projectId,
           next.organizationUnitId
         );
+      }
+      if (next.status === "ready_for_review" && current.status !== "ready_for_review") {
+        const stepSnapshot = await transaction.get(
+          adminDb.collection("procedureSteps").where("procedureId", "==", current.id).limit(101)
+        );
+        if (stepSnapshot.size > 100) {
+          throw new ProcedureAccessError("Procedure quality source exceeds its supported bound.", 409);
+        }
+        const steps = stepSnapshot.docs.map((document) =>
+          parsePersistedProcedureStep(document.id, document.data())
+        );
+        if (steps.some((step) => !step || step.companyId !== current.companyId || step.projectId !== current.projectId || step.procedureId !== current.id)) {
+          throw new ProcedureAccessError("Procedure-step relationship is invalid.", 409);
+        }
+        const validSteps = steps.filter((step) => step !== null);
+        const unitIds = [...new Set(validSteps.flatMap((step) => step.organizationUnitId ? [step.organizationUnitId] : []))];
+        const userIds = [...new Set(validSteps.flatMap((step) => [step.performer, step.review?.performer, step.approval?.performer].flatMap((performer) => performer?.type === "user" && performer.userId ? [performer.userId] : [])))];
+        const [unitSnapshots, userSnapshots] = await Promise.all([
+          Promise.all(unitIds.map((id) => transaction.get(adminDb.collection("organizationUnits").doc(id)))),
+          Promise.all(userIds.map((id) => transaction.get(adminDb.collection("users").doc(id)))),
+        ]);
+        if (unitSnapshots.some((snapshot) => { const unit = snapshot.exists ? parsePersistedOrganizationUnit(snapshot.id, snapshot.data()) : null; return !unit || !unit.active || unit.companyId !== current.companyId; })) throw new ProcedureAccessError("Procedure organization-unit reference is invalid.", 409);
+        if (userSnapshots.some((snapshot) => { const user = snapshot.exists ? parsePersistedCompanyUser(snapshot.id, snapshot.data()) : null; return !user || !user.active || user.companyId !== current.companyId; })) throw new ProcedureAccessError("Procedure performer reference is invalid.", 409);
+        const assessment = assessProcedure({ procedure: { id: current.id, ...next }, steps: validSteps });
+        if (assessment.counts.blocking > 0) {
+          throw new ProcedureQualityGateError(localizeAssessment(assessment, "ar"));
+        }
       }
       transaction.update(procedureRef, {
         ...changes,
