@@ -6,7 +6,7 @@ import {
   parseProcedureCreateInput,
   parseProcedureStepCreateInput,
 } from "@/lib/procedures";
-import { GuidedAnswer, GuidedAnswerValue, GuidedProjection, ProcedureCandidate } from "@/lib/guided-documentation";
+import { GuidedAnswer, GuidedAnswerValue, GuidedProjection, ProcedureCandidate, createStepKey } from "@/lib/guided-documentation";
 
 export type GuidedStage = "discovery_context" | "candidate_classification" | "procedure_basics" | "procedure_inputs" | "step_core" | "step_resources" | "step_controls" | "procedure_outputs" | "clarification_review" | "confirmation" | "complete";
 export type QuestionDefinition = {
@@ -83,6 +83,15 @@ export const QUESTION_REGISTRY = new Map(definitions.map((question) => [question
 export function publicQuestion(question: QuestionDefinition) {
   return { id: question.id, stage: question.stage, promptAr: question.promptAr, helpAr: question.helpAr, answerKind: question.answerKind, choices: question.choices, uncertainty: question.uncertainty };
 }
+export function nextV2State(answers: GuidedAnswer[], sessionId: string) {
+  const basics = nextQuestionForStages(answers, sessionId, "candidate", ["procedure_basics", "procedure_inputs"]); if (basics) return { stage: basics.stage, subjectType: "candidate" as const, subjectKey: sessionId, nextQuestion: publicQuestion(basics) };
+  const stepKeys = [...new Set(answers.filter((answer) => answer.subjectType === "step" && answer.stepKey).map((answer) => answer.stepKey as string))].sort(); let stepKey = stepKeys.at(-1) ?? createStepKey(1);
+  const stepQuestion = nextQuestionForStages(answers, stepKey, "step", ["step_core", "step_resources", "step_controls"]); if (stepQuestion) return { stage: stepQuestion.stage, subjectType: "step" as const, subjectKey: stepKey, stepKey, stepNumber: stepKeys.includes(stepKey) ? stepKeys.indexOf(stepKey) + 1 : 1, nextQuestion: publicQuestion(stepQuestion) };
+  const continued = answers.find((answer) => answer.active && answer.subjectKey === stepKey && answer.questionId === "step.continue")?.answer; if (continued?.kind === "boolean" && continued.value) { stepKey = createStepKey(stepKeys.length + 1); const question = nextQuestionForStages(answers, stepKey, "step", ["step_core"]); return { stage: "step_core" as const, subjectType: "step" as const, subjectKey: stepKey, stepKey, stepNumber: stepKeys.length + 1, nextQuestion: question ? publicQuestion(question) : null }; }
+  const outputs = nextQuestionForStages(answers, sessionId, "candidate", ["procedure_outputs"]); if (outputs) return { stage: outputs.stage, subjectType: "candidate" as const, subjectKey: sessionId, nextQuestion: publicQuestion(outputs) };
+  const confirmation = nextQuestionForStages(answers, sessionId, "candidate", ["confirmation"]); return { stage: confirmation ? "confirmation" as const : "complete" as const, subjectType: "candidate" as const, subjectKey: sessionId, nextQuestion: confirmation ? publicQuestion(confirmation) : null };
+}
+export function v2ProjectionAnswers(answers: GuidedAnswer[], sessionId: string) { return answers.map((answer) => ({ ...answer, candidateId: sessionId })); }
 export function validateQuestionAnswer(question: QuestionDefinition, answer: GuidedAnswerValue) {
   if (answer.kind !== question.answerKind) return false;
   if (answer.kind === "choice") return !question.choices || question.choices.includes(answer.value);

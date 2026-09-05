@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 
 import { GuidedAccessError, requireGuidedActor, requireSessionAccess } from "@/lib/guided-authorization";
 import { createStepKey } from "@/lib/guided-documentation";
-import { QUESTION_REGISTRY, activeAnswer, classificationRecommendation, nextQuestionForStages, publicQuestion } from "@/lib/guided-question-registry";
+import { QUESTION_REGISTRY, activeAnswer, classificationRecommendation, nextQuestionForStages, nextV2State, publicQuestion } from "@/lib/guided-question-registry";
 import { exactQuery, guidedError, loadAnswers, loadCandidate, loadClarifications } from "@/lib/guided-store";
 import { isValidFirestoreDocumentId } from "@/lib/request-validation";
+import { traceGuidedOperation } from "@/lib/guided-observability";
 
 export async function GET(request: Request) {
   try {
@@ -15,6 +16,11 @@ export async function GET(request: Request) {
     if (!sessionId || !isValidFirestoreDocumentId(sessionId) || candidateId && !isValidFirestoreDocumentId(candidateId) || requestedStepKey && !isValidFirestoreDocumentId(requestedStepKey) || clarificationId && !isValidFirestoreDocumentId(clarificationId)) throw new GuidedAccessError("Invalid guided scope.", 400);
     const session = await requireSessionAccess(sessionId, actor);
     if (!session.active || session.status !== "active") return NextResponse.json({ success: true, stage: "complete", nextQuestion: null });
+    if (session.engineVersion === "guided-v2") {
+      if (candidateId || clarificationId) throw new GuidedAccessError("V2 sessions do not use procedure candidates.", 400);
+      const answers = await loadAnswers(session); traceGuidedOperation({ operation: "guided-next.v2", queries: 1, documentsReturned: answers.length, writesAtLeast: 0, evidenceLoads: 1 });
+      return NextResponse.json({ success: true, ...nextV2State(answers, session.id) });
+    }
     if (session.phase === "discovery") {
       const answers = await loadAnswers(session);
       const question = nextQuestionForStages(answers, session.id, "session", ["discovery_context"]);

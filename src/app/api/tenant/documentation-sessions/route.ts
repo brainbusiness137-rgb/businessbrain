@@ -2,10 +2,11 @@ import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/firebase-admin";
 import { GuidedAccessError, requireGuidedActor, requireSessionAccess, requireSessionWriteContext, validateSubject } from "@/lib/guided-authorization";
-import { DISCOVERY_PROMPT_SET_VERSION, GUIDED_ENGINE_VERSION, guidedAnswerDocumentId, parsePersistedAnswer, parsePersistedCandidate, parsePersistedSession, parseSessionCreate } from "@/lib/guided-documentation";
+import { DISCOVERY_PROMPT_SET_VERSION, GUIDED_ENGINE_VERSION, findConflictingV2Session, guidedAnswerDocumentId, isResumableV2Session, parsePersistedAnswer, parsePersistedCandidate, parsePersistedSession, parseSessionCreate } from "@/lib/guided-documentation";
 import { exactQuery, guidedError } from "@/lib/guided-store";
 import { isValidFirestoreDocumentId, readJsonObject } from "@/lib/request-validation";
 import { companyUserActorPath } from "@/lib/tenant-model";
+import { traceGuidedOperation } from "@/lib/guided-observability";
 
 const transitions = {
   pause: { status: "paused" }, resume: { status: "active" },
@@ -18,14 +19,21 @@ export async function GET(request: Request) {
     const actor = await requireGuidedActor(); const params = new URL(request.url).searchParams;
     if (exactQuery(params, ["sessionId"])) {
       const sessionId = params.get("sessionId"); if (!sessionId || !isValidFirestoreDocumentId(sessionId)) throw new GuidedAccessError("Invalid session.", 400);
-      return NextResponse.json({ success: true, session: await requireSessionAccess(sessionId, actor) });
+      const session = await requireSessionAccess(sessionId, actor);
+      if (session.engineVersion !== GUIDED_ENGINE_VERSION) return NextResponse.json({ success: true, session, legacy: true });
+      const nameId = guidedAnswerDocumentId(session.id, session.id, "procedure.name", session.id);
+      const nameSnapshot = nameId ? await adminDb.collection("guidedAnswers").doc(nameId).get() : null;
+      const name = nameSnapshot?.exists ? parsePersistedAnswer(nameSnapshot.id, nameSnapshot.data()) : null;
+      return NextResponse.json({ success: true, session, procedureName: name?.answer.kind === "text" ? name.answer.value : "" });
     }
     if (!exactQuery(params, ["projectId"])) throw new GuidedAccessError("A valid project query is required.", 400);
     const projectId = params.get("projectId"); if (!projectId || !isValidFirestoreDocumentId(projectId)) throw new GuidedAccessError("Invalid project.", 400);
     const snapshot = await adminDb.collection("documentationSessions").where("projectId", "==", projectId).limit(101).get();
     const parsed = snapshot.docs.slice(0, 100).flatMap((document) => { const session = parsePersistedSession(document.id, document.data()); return session && session.companyId === actor.companyId && session.projectId === projectId ? [session] : []; });
     const checks = await Promise.allSettled(parsed.map((session) => requireSessionAccess(session.id, actor)));
-    return NextResponse.json({ success: true, sessions: checks.flatMap((result) => result.status === "fulfilled" ? [result.value] : []), truncated: snapshot.size > 100, limit: 100 });
+    const resumable = checks.flatMap((result) => result.status === "fulfilled" && isResumableV2Session(result.value) ? [result.value] : []);
+    const sessions = await Promise.all(resumable.map(async (session) => { const nameId = guidedAnswerDocumentId(session.id, session.id, "procedure.name", session.id); const snap = nameId ? await adminDb.collection("guidedAnswers").doc(nameId).get() : null; const answer = snap?.exists ? parsePersistedAnswer(snap.id, snap.data()) : null; return { ...session, procedureName: answer?.answer.kind === "text" ? answer.answer.value : "إجراء غير مكتمل" }; }));
+    return NextResponse.json({ success: true, sessions, truncated: snapshot.size > 100, limit: 100 });
   } catch (error) { return guidedError(error); }
 }
 
@@ -33,14 +41,36 @@ export async function POST(request: Request) {
   try {
     const actor = await requireGuidedActor(); const input = parseSessionCreate(await readJsonObject(request));
     if (!input) throw new GuidedAccessError("Invalid documentation session request.", 400);
-    const ref = adminDb.collection("documentationSessions").doc();
-    await adminDb.runTransaction(async (transaction) => {
-      const canonical = await requireSessionWriteContext(transaction, actor, { id: ref.id, ...input, phase: "discovery", status: "active", engineVersion: GUIDED_ENGINE_VERSION, discoveryPromptSetVersion: DISCOVERY_PROMPT_SET_VERSION, active: true, createdBy: companyUserActorPath(actor.id), updatedBy: companyUserActorPath(actor.id) });
+    const { procedureName, ...scope } = input; const ref = adminDb.collection("documentationSessions").doc();
+    const result = await adminDb.runTransaction(async (transaction) => {
+      const proposed = { id: ref.id, ...scope, phase: "documentation" as const, status: "active" as const, engineVersion: GUIDED_ENGINE_VERSION, discoveryPromptSetVersion: DISCOVERY_PROMPT_SET_VERSION, active: true, createdBy: companyUserActorPath(actor.id), updatedBy: companyUserActorPath(actor.id) };
+      const canonical = await requireSessionWriteContext(transaction, actor, proposed);
       await validateSubject(transaction, canonical, input.companyId, input.projectId, input.organizationUnitId, input.subjectType, input.subjectUserId);
+      const existingSnapshot = await transaction.get(adminDb.collection("documentationSessions").where("projectId", "==", input.projectId).limit(101));
+      if (existingSnapshot.size > 100) throw new GuidedAccessError("Documentation session limit exceeded.", 409);
+      const sameScopeSessions = existingSnapshot.docs.flatMap((document) => {
+        const session = parsePersistedSession(document.id, document.data());
+        return session && isResumableV2Session(session) && session.companyId === scope.companyId && session.projectId === scope.projectId && session.organizationUnitId === scope.organizationUnitId && session.subjectType === scope.subjectType && session.subjectUserId === scope.subjectUserId ? [session] : [];
+      });
+      const namedSessions: Array<{ session: (typeof sameScopeSessions)[number]; procedureName?: string }> = [];
+      for (const session of sameScopeSessions) {
+        const nameId = guidedAnswerDocumentId(session.id, session.id, "procedure.name", session.id);
+        const nameSnapshot = nameId ? await transaction.get(adminDb.collection("guidedAnswers").doc(nameId)) : null;
+        const name = nameSnapshot?.exists ? parsePersistedAnswer(nameSnapshot.id, nameSnapshot.data()) : null;
+        const validName = name && name.sessionId === session.id && name.companyId === session.companyId && name.projectId === session.projectId && name.organizationUnitId === session.organizationUnitId && name.subjectType === "candidate" && name.subjectKey === session.id && name.candidateId === session.id && name.questionId === "procedure.name" && name.ruleId === "procedure.name.required.v1" && name.active && name.answer.kind === "text" ? name.answer.value : undefined;
+        if (validName === undefined) throw new GuidedAccessError("Existing procedure name evidence is invalid.", 409);
+        namedSessions.push({ session, procedureName: validName });
+      }
+      const existing = findConflictingV2Session(namedSessions, scope, procedureName);
+      if (existing) return { sessionId: existing.id, existing: true };
       const actorPath = companyUserActorPath(canonical.id); const now = FieldValue.serverTimestamp();
-      transaction.create(ref, { ...input, phase: "discovery", status: "active", engineVersion: GUIDED_ENGINE_VERSION, discoveryPromptSetVersion: DISCOVERY_PROMPT_SET_VERSION, active: true, createdBy: actorPath, updatedBy: actorPath, createdAt: now, updatedAt: now, lastActivityAt: now });
+      transaction.create(ref, { ...scope, phase: "documentation", status: "active", engineVersion: GUIDED_ENGINE_VERSION, discoveryPromptSetVersion: DISCOVERY_PROMPT_SET_VERSION, active: true, createdBy: actorPath, updatedBy: actorPath, createdAt: now, updatedAt: now, lastActivityAt: now });
+      const nameId = guidedAnswerDocumentId(ref.id, ref.id, "procedure.name", ref.id); if (!nameId) throw new GuidedAccessError("Procedure name identity is invalid.", 400);
+      transaction.create(adminDb.collection("guidedAnswers").doc(nameId), { companyId: input.companyId, projectId: input.projectId, organizationUnitId: input.organizationUnitId, sessionId: ref.id, subjectType: "candidate", subjectKey: ref.id, questionId: "procedure.name", ruleId: "procedure.name.required.v1", answer: { kind: "text", value: procedureName }, certainty: "confirmed", active: true, answeredBy: actorPath, candidateId: ref.id, createdAt: now, updatedAt: now });
+      return { sessionId: ref.id, existing: false };
     });
-    return NextResponse.json({ success: true, sessionId: ref.id }, { status: 201 });
+    traceGuidedOperation({ operation: result.existing ? "guided-session.resume-existing" : "guided-session.create-v2", queries: 1, writesAtLeast: result.existing ? 0 : 2 });
+    return NextResponse.json({ success: true, ...result }, { status: result.existing ? 200 : 201 });
   } catch (error) { return guidedError(error); }
 }
 

@@ -8,7 +8,8 @@ const SUMMARY_LIMIT = 500;
 const MAX_ITEMS = 100;
 const MAX_PAYLOAD = 200_000;
 
-export const GUIDED_ENGINE_VERSION = "guided-v1";
+export const GUIDED_ENGINE_VERSION = "guided-v2";
+export const LEGACY_GUIDED_ENGINE_VERSION = "guided-v1";
 export const DISCOVERY_PROMPT_SET_VERSION = "discovery-v1";
 export const SESSION_PHASES = ["discovery", "classification", "documentation", "confirmation", "completed"] as const;
 export const SESSION_STATUSES = ["active", "paused", "completed", "abandoned"] as const;
@@ -73,6 +74,17 @@ export type ClarificationItem = {
   candidateId?: string; stepKey?: string; answerId?: string;
 };
 
+export function isResumableV2Session(session: DocumentationSession) {
+  return session.engineVersion === GUIDED_ENGINE_VERSION && session.active && ["active", "paused"].includes(session.status);
+}
+export function normalizeProcedureName(value: string) {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
+}
+export function findConflictingV2Session(sessions: Array<{ session: DocumentationSession | null; procedureName?: string }>, scope: { companyId: string; projectId: string; organizationUnitId: string; subjectType: "user" | "organization_unit"; subjectUserId?: string }, procedureName: string) {
+  const normalizedName = normalizeProcedureName(procedureName);
+  return sessions.find(({ session, procedureName: persistedName }) => session && persistedName !== undefined && isResumableV2Session(session) && session.companyId === scope.companyId && session.projectId === scope.projectId && session.organizationUnitId === scope.organizationUnitId && session.subjectType === scope.subjectType && session.subjectUserId === scope.subjectUserId && normalizeProcedureName(persistedName) === normalizedName)?.session ?? null;
+}
+
 function object(value: unknown): value is Json { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function exact(value: Json, allowed: readonly string[], required: readonly string[] = []) {
   const set = new Set(allowed);
@@ -133,9 +145,9 @@ export function parseAnswerValue(value: unknown): GuidedAnswerValue | null {
 }
 
 export function parseSessionCreate(value: unknown) {
-  if (!object(value) || !safeSize(value) || !exact(value, ["companyId", "projectId", "organizationUnitId", "subjectType", "subjectUserId"], ["companyId", "projectId", "organizationUnitId", "subjectType"]) || !id(value.companyId) || !id(value.projectId) || !id(value.organizationUnitId) || !oneOf(SUBJECT_TYPES, value.subjectType)) return null;
+  if (!object(value) || !safeSize(value) || !exact(value, ["companyId", "projectId", "organizationUnitId", "subjectType", "subjectUserId", "procedureName"], ["companyId", "projectId", "organizationUnitId", "subjectType", "procedureName"]) || !id(value.companyId) || !id(value.projectId) || !id(value.organizationUnitId) || !oneOf(SUBJECT_TYPES, value.subjectType) || !isValidRequiredString(value.procedureName, 200)) return null;
   if (value.subjectType === "user" ? !id(value.subjectUserId) : Object.hasOwn(value, "subjectUserId")) return null;
-  return { companyId: value.companyId, projectId: value.projectId, organizationUnitId: value.organizationUnitId, subjectType: value.subjectType, ...(typeof value.subjectUserId === "string" ? { subjectUserId: value.subjectUserId } : {}) };
+  return { companyId: value.companyId, projectId: value.projectId, organizationUnitId: value.organizationUnitId, subjectType: value.subjectType, procedureName: value.procedureName.trim(), ...(typeof value.subjectUserId === "string" ? { subjectUserId: value.subjectUserId } : {}) };
 }
 
 export function parseCandidateCreate(value: unknown) {
