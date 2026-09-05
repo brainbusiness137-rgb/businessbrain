@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { adminAuth } from "@/lib/firebase-admin";
 import {
-  isAllowedAuthOrigin,
+  evaluateAuthRequestOrigin,
   SESSION_COOKIE_MAX_AGE_SECONDS,
   SESSION_COOKIE_NAME,
   sessionCookieOptions,
@@ -13,7 +13,11 @@ import {
 
 export async function POST(request: NextRequest) {
   try {
-    if (!isAllowedAuthOrigin(request.headers.get("origin"))) {
+    const originDecision = evaluateAuthRequestOrigin(request.headers);
+    if (!originDecision.allowed) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("Auth session origin rejected", { reason: originDecision.reason });
+      }
       return NextResponse.json(
         { success: false, message: "Invalid origin" },
         { status: 403 }

@@ -34,6 +34,7 @@ export default function LoginPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-BusinessBrain-Origin": window.location.origin,
         },
         body: JSON.stringify({
           idToken,

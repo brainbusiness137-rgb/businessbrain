@@ -13,6 +13,7 @@ export default function LogoutButton() {
     try {
       const response = await fetch("/api/auth/logout", {
         method: "POST",
+        headers: { "X-BusinessBrain-Origin": window.location.origin },
       });
 
       if (!response.ok) {
