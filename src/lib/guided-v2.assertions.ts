@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { GUIDED_ENGINE_VERSION, LEGACY_GUIDED_ENGINE_VERSION, type DocumentationSession, type GuidedAnswer, findConflictingV2Session, normalizeProcedureName, parseSessionCreate } from "@/lib/guided-documentation";
+import { GUIDED_ENGINE_VERSION, LEGACY_GUIDED_ENGINE_VERSION, type DocumentationSession, type GuidedAnswer, findConflictingV2Session, normalizeProcedureName, parseAnswerSubmission, parseSessionCreate, resolveAnswerSubmissionIdentity } from "@/lib/guided-documentation";
 import { nextV2State, v2ProjectionAnswers } from "@/lib/guided-question-registry";
 
 const session: DocumentationSession = { id: "session", companyId: "company", projectId: "project", organizationUnitId: "unit", subjectType: "user", subjectUserId: "employee", phase: "documentation", status: "active", engineVersion: GUIDED_ENGINE_VERSION, discoveryPromptSetVersion: "discovery-v1", active: true, createdBy: "users/employee", updatedBy: "users/employee" };
@@ -21,5 +21,20 @@ export function runGuidedV2Assertions() {
   assert.equal(findConflictingV2Session([{ session: { ...session, id: "other", projectId: "other-project" }, procedureName: "اعتماد صرف العهد" }], session, "اعتماد صرف العهد"), null, "cross-project sessions cannot collide or resume");
   assert.equal(findConflictingV2Session([{ session: { ...session, id: "other", organizationUnitId: "other-unit" }, procedureName: "اعتماد صرف العهد" }], session, "اعتماد صرف العهد"), null, "cross-unit sessions cannot collide or resume");
   assert.equal(findConflictingV2Session([{ session: { ...session, engineVersion: LEGACY_GUIDED_ENGINE_VERSION }, procedureName: "اعتماد صرف العهد" }], session, "اعتماد صرف العهد"), null, "legacy sessions are excluded from V2 name-aware conflicts");
+  const candidatePayload = parseAnswerSubmission({ sessionId: session.id, subjectType: "candidate", subjectKey: session.id, questionId: "procedure.objective", answer: { kind: "text", value: "هدف واضح" }, certainty: "confirmed" });
+  assert.ok(candidatePayload, "candidate-free V2 candidate answer is structurally valid");
+  assert.equal(resolveAnswerSubmissionIdentity(session, candidatePayload, "candidate")?.effectiveCandidateId, session.id, "V2 candidate compatibility identity is derived from the authoritative session");
+  const stepPayload = parseAnswerSubmission({ sessionId: session.id, subjectType: "step", subjectKey: "step-1", stepKey: "step-1", questionId: "step.name", answer: { kind: "text", value: "تنفيذ الخطوة" }, certainty: "confirmed" });
+  assert.ok(stepPayload, "candidate-free V2 step answer is structurally valid");
+  assert.equal(resolveAnswerSubmissionIdentity(session, stepPayload, "step")?.effectiveCandidateId, session.id, "V2 step compatibility identity is derived from the authoritative session");
+  const suppliedV2Candidate = parseAnswerSubmission({ sessionId: session.id, candidateId: session.id, subjectType: "candidate", subjectKey: session.id, questionId: "procedure.objective", answer: { kind: "text", value: "هدف" }, certainty: "confirmed" });
+  assert.ok(suppliedV2Candidate, "a supplied candidate ID remains structurally parseable for engine-specific validation");
+  assert.equal(resolveAnswerSubmissionIdentity(session, suppliedV2Candidate, "candidate"), null, "V2 rejects every client-supplied candidate ID, including the session ID");
+  const legacy = { ...session, engineVersion: LEGACY_GUIDED_ENGINE_VERSION };
+  assert.equal(resolveAnswerSubmissionIdentity(legacy, candidatePayload, "candidate"), null, "legacy candidate answers still require candidateId");
+  assert.equal(resolveAnswerSubmissionIdentity(legacy, suppliedV2Candidate, "candidate")?.effectiveCandidateId, session.id, "legacy candidate answers retain supplied candidate identity for relationship validation");
+  assert.equal(resolveAnswerSubmissionIdentity(session, { ...candidatePayload, subjectKey: "other-session" }, "candidate"), null, "V2 rejects candidate answers with a non-session subject key");
+  assert.equal(parseAnswerSubmission({ sessionId: session.id, subjectType: "step", subjectKey: "step-1", stepKey: "step-2", questionId: "step.name", answer: { kind: "text", value: "تنفيذ" }, certainty: "confirmed" }), null, "step subject and step key must match structurally");
+  assert.equal(resolveAnswerSubmissionIdentity(session, candidatePayload, "step"), null, "authoritative question subject type must match the submission");
   assert.equal(v2ProjectionAnswers([name], session.id)[0].candidateId, session.id, "V2 conversion adapts session-scoped evidence without persisting a candidate record");
 }

@@ -2,7 +2,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/firebase-admin";
 import { GuidedAccessError, requireGuidedActor, requireSessionAccess, requireSessionWriteContext } from "@/lib/guided-authorization";
-import { guidedAnswerDocumentId, parseAnswerSubmission, parsePersistedAnswer, parsePersistedCandidate, parsePersistedClarification, parsePersistedSession } from "@/lib/guided-documentation";
+import { guidedAnswerDocumentId, parseAnswerSubmission, parsePersistedAnswer, parsePersistedCandidate, parsePersistedClarification, parsePersistedSession, resolveAnswerSubmissionIdentity } from "@/lib/guided-documentation";
 import { QUESTION_REGISTRY, isQuestionApplicable, nextQuestion, nextQuestionForStages, nextV2State, publicQuestion, validateQuestionAnswer } from "@/lib/guided-question-registry";
 import { MAX_GUIDED_ANSWERS_PER_CANDIDATE, guidedError, loadAnswers } from "@/lib/guided-store";
 import { isValidFirestoreDocumentId, readJsonObject } from "@/lib/request-validation";
@@ -27,10 +27,12 @@ export async function POST(request: Request) {
     const actor = await requireGuidedActor(); const input = parseAnswerSubmission(await readJsonObject(request));
     if (!input) throw new GuidedAccessError("Invalid guided answer.", 400);
     const session = await requireSessionAccess(input.sessionId, actor); const question = QUESTION_REGISTRY.get(input.questionId);
-    if (!question || question.subjectType !== input.subjectType) throw new GuidedAccessError("Unknown or mismatched question.", 400);
+    if (!question) throw new GuidedAccessError("Unknown or mismatched question.", 400);
+    const identity = resolveAnswerSubmissionIdentity(session, input, question.subjectType);
+    if (!identity) throw new GuidedAccessError("Answer subject is invalid.", 400);
     const uncertaintyOnly = input.certainty === "unknown" || input.certainty === "needs_check";
     if (!uncertaintyOnly && !validateQuestionAnswer(question, input.answer)) throw new GuidedAccessError("Answer does not match the question contract.", 400);
-    const effectiveCandidateId = session.engineVersion === "guided-v2" ? session.id : input.candidateId;
+    const { effectiveCandidateId } = identity;
     const answerId = guidedAnswerDocumentId(session.id, input.subjectKey, input.questionId, effectiveCandidateId); if (!answerId) throw new GuidedAccessError("Answer identity is invalid.", 400);
     const answerRef = adminDb.collection("guidedAnswers").doc(answerId);
     const updatedAnswers = await adminDb.runTransaction(async (transaction) => {

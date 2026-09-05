@@ -159,7 +159,7 @@ export function parseCandidateCreate(value: unknown) {
 
 export function parseAnswerSubmission(value: unknown) {
   if (!object(value) || !safeSize(value) || !exact(value, ["sessionId", "candidateId", "subjectType", "subjectKey", "stepKey", "questionId", "answer", "certainty", "uncertaintyNote"], ["sessionId", "subjectType", "subjectKey", "questionId", "answer", "certainty"]) || !id(value.sessionId) || !oneOf(ANSWER_SUBJECT_TYPES, value.subjectType) || !id(value.subjectKey) || !isValidRequiredString(value.questionId, 200) || !oneOf(CERTAINTIES, value.certainty)) return null;
-  if ((value.subjectType === "candidate" || value.subjectType === "step") && !id(value.candidateId)) return null;
+  if (Object.hasOwn(value, "candidateId") && !id(value.candidateId)) return null;
   if (value.subjectType === "session" && Object.hasOwn(value, "candidateId")) return null;
   if (value.subjectType === "step" && (!id(value.stepKey) || value.stepKey !== value.subjectKey)) return null;
   if (value.subjectType !== "step" && Object.hasOwn(value, "stepKey")) return null;
@@ -167,6 +167,16 @@ export function parseAnswerSubmission(value: unknown) {
   if (!answer || note === null || (value.certainty !== "confirmed" && !note && value.certainty !== "unknown")) return null;
   const sessionId = value.sessionId as string; const subjectKey = value.subjectKey as string; const questionId = value.questionId as string;
   return { sessionId, subjectType: value.subjectType, subjectKey, questionId, answer, certainty: value.certainty, ...(typeof value.candidateId === "string" ? { candidateId: value.candidateId } : {}), ...(typeof value.stepKey === "string" ? { stepKey: value.stepKey } : {}), ...(note !== undefined ? { uncertaintyNote: note } : {}) };
+}
+
+export function resolveAnswerSubmissionIdentity(session: DocumentationSession, input: NonNullable<ReturnType<typeof parseAnswerSubmission>>, questionSubjectType: AnswerSubjectType) {
+  if (input.subjectType !== questionSubjectType) return null;
+  if (session.engineVersion === GUIDED_ENGINE_VERSION) {
+    if (input.candidateId !== undefined || input.subjectType === "session" || input.subjectType === "candidate" && input.subjectKey !== session.id) return null;
+    return { effectiveCandidateId: session.id };
+  }
+  if (input.subjectType === "candidate" || input.subjectType === "step") return input.candidateId ? { effectiveCandidateId: input.candidateId } : null;
+  return input.subjectKey === session.id && input.candidateId === undefined ? { effectiveCandidateId: undefined } : null;
 }
 
 const auditFields = ["createdBy", "updatedBy", "createdAt", "updatedAt"];
